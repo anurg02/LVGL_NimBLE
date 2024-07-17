@@ -1,0 +1,1 @@
+This branch of the repo is meant for TWAI (Two wire Automotive interface) protocol related code and commits. Currently the main file creates a display application on LVGL Crowpanel display to receive and transmit TWAI data.
