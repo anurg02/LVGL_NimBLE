@@ -1,5 +1,17 @@
+#include <Arduino.h>
 #include <lvgl.h>
 #include <demos/lv_demos.h>
+#include "driver/twai.h"
+#include <stdlib.h>
+#include <stdio.h>
+#include <iostream>
+#include <vector>
+
+#define CAN_TX 43
+#define CAN_RX 44
+
+static bool driver_installed = false;
+std::vector<char> receivebuf;
 static uint32_t screenWidth;
 static uint32_t screenHeight;
 static lv_disp_draw_buf_t draw_buf;
@@ -25,14 +37,18 @@ static lv_obj_t *bar;       // Menu界面进度条
 #include <ArduinoJson.h>
 #include <jsonfile.h>
 #include <HTTPClient.h>
-const char *wifissid = "sanjay";
-const char *pass = "sanjaydeshpande";
-const char *serverurl = "http://192.168.43.200:5000//get_json";
-
-String jsonstring;
+const char *wifissid1 = "AutovueWiFi";
+const char *pass1 = "Admin123456";
+const char *wifissid2 = "sanjay";
+const char *pass2 = "sanjaydeshpande";
+const char *serverurl = "http://192.168.43.200:5000/get_json/";
+const char *menuurl = "http://192.168.43.200:5000/get_json/menus.json";
+// String GlobalJson;
 char jsonbuffer[2048];
 HTTPClient client;
-DynamicJsonDocument doc(2048);
+DynamicJsonDocument mymenusdoc(2048);
+bool wifi_flag;
+// DynamicJsonDocument docnew(2048);
 SPIClass &spi = SPI;
 uint16_t touchCalibration_x0 = 300, touchCalibration_x1 = 3600, touchCalibration_y0 = 300, touchCalibration_y1 = 3600;
 uint8_t touchCalibration_rotate = 1, touchCalibration_invert_x = 2, touchCalibration_invert_y = 0;
@@ -77,34 +93,24 @@ Arduino_RPi_DPI_RGBPanel *lcd = new Arduino_RPi_DPI_RGBPanel(
 #endif /* !defined(DISPLAY_DEV_KIT) */
 #include "touch.h"
 
-// function prototypes//
-// Event callback for handling button clicks
-void jsonCB(lv_event_t *e);
-
-// Creates the initial screen with a button
+// Function prototypes
 void create_screen();
-
-// Draws a button on the screen
-void drawButton(lv_coord_t width, lv_coord_t height, lv_align_t align, lv_coord_t xoff, lv_coord_t yoff);
-
-// Draws a text area (textbox) on the screen
+void dropdownCB(lv_event_t *e);
+void createDropdown(const char *menuName);
+void drawButton(lv_obj_t *parent, lv_coord_t width, lv_coord_t height, lv_align_t align, lv_coord_t xoff, lv_coord_t yoff);
 void drawTextbox(const char *tempText, lv_coord_t w, lv_coord_t h, lv_align_t align, lv_coord_t xoff, lv_coord_t yoff);
-
-// Draws a label on the screen
 void drawlabel(const char *txt);
-
-// Draws a switch on the screen
 void drawswitch(lv_align_t align, lv_coord_t xoff, lv_coord_t yoff);
-
-// Iterates through a JSON object to create UI elements based on the JSON data
+void menuJson(JsonVariant jsonVariant);
 void iterateJson(JsonVariant jsonVariant);
-
-// Draws the display based on the JSON data
-void drawdisplay();
-
-// Gets JSON data from the server
-void getJson();
-
+String getJson(String url);
+JsonVariant parsejson(String json);
+void serialprint();
+void wificonnectCB(lv_event_t *event);
+void connectmsg();
+void wifiscaneventCB(lv_event_t *event);
+void createscreenOne();
+void callnextCB(lv_event_t *e);
 /* Display flushing */
 void my_disp_flush(lv_disp_drv_t *disp, const lv_area_t *area, lv_color_t *color_p)
 {
@@ -461,48 +467,59 @@ void setTouch(uint16_t *parameters)
 lv_coord_t width, height, x_off, y_off;
 lv_align_t alignment;
 const char *parent;
-lv_obj_t *screen1, *button1, *label1, *txtArea1, *mainPanel;
+lv_obj_t *screen1, *button1, *label1, *txtArea1, *mainPanel, *dropdownlist, *parentbutton, *wifipanel, *serTextarea, *Transmitbtn;
+int pos = 0;
 
+// Setup function
+
+// Create screen function
 void create_screen()
 {
   screen1 = lv_obj_create(NULL);
   lv_scr_load(screen1); // Load the screen as the active screen
 
-  lv_obj_t *jsonbtn = lv_btn_create(lv_scr_act());
-  lv_obj_add_event_cb(jsonbtn, jsonCB, LV_EVENT_ALL, mainPanel);
-  lv_obj_align(jsonbtn, LV_ALIGN_TOP_RIGHT, -20, 20);
-  lv_obj_set_size(jsonbtn, LV_SIZE_CONTENT, LV_SIZE_CONTENT);
-
   mainPanel = lv_obj_create(screen1);
   lv_obj_align(mainPanel, LV_ALIGN_CENTER, 0, 50);
   lv_obj_set_size(mainPanel, 600, 350);
 
-  lv_obj_t *jsonlabel = lv_label_create(jsonbtn);
-  lv_label_set_text(jsonlabel, "Click to Get DisplayJSON");
-  lv_obj_set_style_text_font(jsonlabel, &lv_font_montserrat_16, NULL);
+  dropdownlist = lv_dropdown_create(lv_scr_act());
+  lv_dropdown_set_text(dropdownlist, "Menu");
+  lv_dropdown_set_selected_highlight(dropdownlist, false);
+  lv_obj_align(dropdownlist, LV_ALIGN_TOP_RIGHT, -10, 10);
+  lv_obj_add_event_cb(dropdownlist, dropdownCB, LV_EVENT_VALUE_CHANGED, NULL);
 }
-void jsonCB(lv_event_t *e)
-{
-  lv_event_code_t evcode = lv_event_get_code(e);
-  lv_obj_t *panel = (lv_obj_t *)lv_event_get_user_data(e);
-  if (evcode == LV_EVENT_CLICKED)
-  {
 
-    getJson();
-    lv_obj_t *child;
-    while ((child = lv_obj_get_child(mainPanel, NULL)) != NULL)
-    {
-      lv_obj_del(child);
-    }
-    drawdisplay();
+// Dropdown event callback function
+void dropdownCB(lv_event_t *e)
+{
+  lv_event_code_t code = lv_event_get_code(e);
+  lv_obj_t *dropdown = lv_event_get_target(e);
+  if (code == LV_EVENT_VALUE_CHANGED)
+  {
+    char menustr[50];
+    lv_dropdown_get_selected_str(dropdown, menustr, sizeof(menustr));
+    String filename = mymenusdoc[menustr];
+    String filepath = serverurl + filename;
+    String displayjson = getJson(filepath);
+    iterateJson(parsejson(displayjson));
   }
 }
-void drawButton(lv_coord_t width, lv_coord_t height, lv_align_t align, lv_coord_t xoff, lv_coord_t yoff)
+
+// Function to create a dropdown option
+void createDropdown(const char *menuName)
 {
-  button1 = lv_btn_create(mainPanel);
+  lv_dropdown_add_option(dropdownlist, menuName, LV_DROPDOWN_POS_LAST);
+}
+
+// Function to draw a button
+void drawButton(lv_obj_t *parent, lv_coord_t width, lv_coord_t height, lv_align_t align, lv_coord_t xoff, lv_coord_t yoff)
+{
+  button1 = lv_btn_create(parent);
   lv_obj_set_size(button1, width, height);
   lv_obj_align(button1, align, xoff, yoff);
 }
+
+// Function to draw a textbox
 void drawTextbox(const char *tempText, lv_coord_t w, lv_coord_t h, lv_align_t align, lv_coord_t xoff, lv_coord_t yoff)
 {
   txtArea1 = lv_textarea_create(mainPanel);
@@ -510,97 +527,201 @@ void drawTextbox(const char *tempText, lv_coord_t w, lv_coord_t h, lv_align_t al
   lv_obj_align(txtArea1, align, xoff, yoff);
   lv_obj_set_size(txtArea1, w, h);
 }
+
+// Function to draw a label
 void drawlabel(const char *txt)
 {
   label1 = lv_label_create(button1);
   lv_label_set_text(label1, txt);
   lv_obj_center(label1);
 }
+
+// Function to draw a switch
 void drawswitch(lv_align_t align, lv_coord_t xoff, lv_coord_t yoff)
 {
   lv_obj_t *sw = lv_switch_create(mainPanel);
   lv_obj_align(sw, align, xoff, yoff);
 }
+
+// Function to parse menu JSON
+void menuJson(JsonVariant jsonVariant)
+{
+  JsonObject jsonObject = jsonVariant.as<JsonObject>();
+  const char *menuName;
+  for (JsonPair keyValue : jsonObject)
+  {
+    menuName = keyValue.key().c_str();
+    createDropdown(menuName);
+  }
+}
+
+// Function to iterate over JSON and create UI elements
 void iterateJson(JsonVariant jsonVariant)
 {
   JsonArray child = jsonVariant["ui"]["root"]["children"];
+  lv_obj_clean(mainPanel);
   for (auto value : child)
   {
     if (value["type"] == "button")
     {
-      width = value["options"]["width"];
-      height = value["options"]["height"];
-      alignment = value["options"]["align"];
-      x_off = value["options"]["x_offset"];
-      y_off = value["options"]["y_offset"];
-      drawButton(width, height, alignment, x_off, y_off);
+      drawButton(mainPanel, value["options"]["width"], value["options"]["height"],
+                 value["options"]["align"], value["options"]["x_offset"], value["options"]["y_offset"]);
     }
     else if (value["type"] == "textarea")
     {
-      const char *myText;
-      myText = value["options"]["tempText"];
-      alignment = value["options"]["alignment"];
-      x_off = value["options"]["x_offset"];
-      y_off = value["options"]["y_offset"];
-      width = value["options"]["width"];
-      height = value["options"]["height"];
-      drawTextbox(myText, width, height, alignment, x_off, y_off);
+      drawTextbox(value["options"]["tempText"], value["options"]["width"], value["options"]["height"],
+                  value["options"]["align"], value["options"]["x_offset"], value["options"]["y_offset"]);
     }
     else if (value["type"] == "label")
     {
-      const char *txt = value["options"]["text"];
-      drawlabel(txt);
+      drawlabel(value["options"]["text"]);
     }
     else if (value["type"] == "switch")
     {
-      alignment = value["options"]["align"];
-      drawswitch(alignment, x_off, y_off);
+      drawswitch(value["options"]["align"], value["options"]["x_offset"], value["options"]["y_offset"]);
     }
   }
 }
-void drawdisplay()
+
+// Function to fetch JSON from server
+String getJson(String url)
 {
-  DeserializationError error = deserializeJson(doc, jsonstring);
-  if (error)
-  {
-    Serial.print("deserializeJson() failed: ");
-    Serial.println(error.c_str());
-    return;
-  }
-  iterateJson(doc);
-}
-void getJson()
-{
-  client.begin(serverurl);
+  HTTPClient client;
+  String jsonstring;
+  client.begin(url);
   client.addHeader("Accept", "application/json");
+  client.setTimeout(5000);
   int code = client.GET();
-  if (code)
+  if (code > 0)
   {
-    Serial.print("The code is: ");
-    Serial.println(code);
     jsonstring = client.getString();
-    Serial.print("the string is: ");
-    Serial.println(jsonstring.c_str());
   }
   else
   {
-    Serial.print("Code not 1 it is: ");
+    Serial.print("Failed to fetch JSON; HTTP error code: ");
     Serial.println(code);
   }
   client.end();
+  return jsonstring;
 }
 
+// Function to parse JSON string into JSON variant
+JsonVariant parsejson(String json)
+{
+  DynamicJsonDocument doc(2048);
+  DeserializationError error = deserializeJson(doc, json);
+  if (error)
+  {
+    Serial.print("Failed to parse JSON: ");
+    Serial.println(error.c_str());
+  }
+  return doc.as<JsonVariant>();
+}
+
+// WiFi connect callback function
+void wificonnectCB(lv_event_t *event)
+{
+  parentbutton = lv_event_get_target(event);
+  lv_obj_t *namelabel;
+  int chlcnt = lv_obj_get_child_cnt(parentbutton);
+  for (int cnt = 0; cnt < chlcnt; cnt++)
+  {
+    if (lv_obj_check_type(lv_obj_get_child(parentbutton, cnt), &lv_label_class))
+    {
+      namelabel = lv_obj_get_child(parentbutton, cnt);
+    }
+  }
+  const char *name = lv_label_get_text(namelabel);
+
+  if (!strcmp(name, "sanjay"))
+  {
+    WiFi.begin(name, "sanjaydeshpande");
+    if (WiFi.status() == WL_CONNECTED)
+    {
+      connectmsg();
+    }
+  }
+  else if (!strcmp(name, "AutovueWiFi"))
+  {
+    WiFi.begin(name, "Admin123456");
+    if (WiFi.status() == WL_CONNECTED)
+    {
+      connectmsg();
+    }
+  }
+}
+
+// Function to display connection message
+void connectmsg()
+{
+  lv_obj_t *labelconnected = lv_label_create(parentbutton);
+  lv_obj_set_style_text_font(labelconnected, &lv_font_montserrat_10, NULL);
+  lv_label_set_text(labelconnected, "Connected");
+  lv_obj_set_style_text_opa(labelconnected, LV_OPA_50, NULL);
+  lv_obj_align(labelconnected, LV_ALIGN_TOP_RIGHT, 0, 0);
+}
+
+// WiFi scan event callback function
+void wifiscaneventCB(lv_event_t *event)
+{
+  if (WiFi.status() == WL_CONNECTED)
+  {
+    WiFi.disconnect();
+  }
+  lv_obj_t *panel = (lv_obj_t *)lv_event_get_user_data(event);
+
+  lv_obj_t *wifilist = lv_list_create(panel);
+  lv_obj_align(wifilist, LV_ALIGN_CENTER, 0, 0);
+
+  WiFi.mode(WIFI_STA);
+  int scannum = WiFi.scanNetworks();
+  for (int var = 0; var < scannum; var++)
+  {
+    String wifiName = WiFi.SSID(var);
+    lv_obj_t *wifibtn = lv_list_add_btn(wifilist, LV_SYMBOL_WIFI, wifiName.c_str());
+    lv_obj_add_event_cb(wifibtn, wificonnectCB, LV_EVENT_CLICKED, NULL);
+  }
+}
+
+// Function to create initial screen
+void createscreenOne()
+{
+  lv_obj_t *screenMain = lv_obj_create(NULL);
+  lv_scr_load(screenMain);
+
+  wifipanel = lv_obj_create(screenMain);
+  lv_obj_align(wifipanel, LV_ALIGN_CENTER, 0, 0);
+  lv_obj_set_size(wifipanel, 750, 350);
+
+  lv_obj_t *wifiscan = lv_btn_create(screenMain);
+  lv_obj_align(wifiscan, LV_ALIGN_TOP_RIGHT, -20, 20);
+  lv_obj_set_height(wifiscan, LV_SIZE_CONTENT);
+  lv_obj_t *wifilabel = lv_label_create(wifiscan);
+  lv_label_set_text(wifilabel, LV_SYMBOL_WIFI);
+  lv_obj_center(wifilabel);
+  lv_obj_add_event_cb(wifiscan, wifiscaneventCB, LV_EVENT_CLICKED, wifipanel);
+}
+void callnextCB(lv_event_t *e)
+{
+
+  create_screen();
+  String mymenus = getJson(menuurl);
+  mymenusdoc = parsejson(mymenus);
+  menuJson(mymenusdoc);
+}
 void setup()
 {
   // put your setup code here, to run once:
-  Serial.begin(9600); // Init Display
-  WiFi.begin(wifissid, pass);
-  while (WiFi.status() != WL_CONNECTED)
-  {
-    Serial.print(".");
-    delay(500);
-  }
-  Serial.println("connected Successfully");
+  Serial.begin(9600); // Init Display'
+  Serial.println("here");
+
+  // WiFi.begin("sanjay", "sanjaydeshpande");
+  // while (WiFi.status() != WL_CONNECTED)
+  // {
+  //   Serial.print(".");
+  //   delay(500);
+  // }
+  // Serial.println("connected");
   lcd->begin();
   lcd->fillScreen(BLACK);
   lcd->setTextSize(2);
@@ -632,16 +753,34 @@ void setup()
   digitalWrite(TFT_BL, HIGH);
 #endif
   lcd->fillScreen(BLACK);
-  create_screen();
+  createscreenOne();
+  // create_screen();
 
-  getJson();
-  drawdisplay();
-  // ui_init();//开机UI界面
+  // String mymenus = getJson(menuurl);
+  // mymenusdoc = parsejson(mymenus);
+  // menuJson(mymenusdoc);
+
+  // drawdisplay();
+  //  ui_init();//开机UI界面
   // lv_demo_widgets(); // 主UI界面
 }
 
 void loop()
 {
   lv_timer_handler();
-  delay(5);
+  if (driver_installed)
+  {
+    twai_message_t message;
+    esp_err_t code = twai_receive(&message, pdMS_TO_TICKS(0));
+    if (code == ESP_OK)
+    {
+      handle_rx_message(message);
+    }
+  }
+  else
+  {
+    drawserialprints("Driver not installed\n");
+  }
+
+  delay(5); // Wait for 1 second before checking again
 }
